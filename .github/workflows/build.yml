@@ -7,16 +7,13 @@ on:
         description: 'Frida version (e.g., 17.15.0) or "latest"'
         required: true
         default: 'latest'
-      platforms:
-        description: 'Platforms to build (android, ios, or both)'
-        required: true
-        default: 'both'
+  schedule:
+    - cron: '0 3 * * 0'
 
 permissions:
   contents: write
 
 jobs:
-  # ─── Detect latest Frida version ────────────────────────────────
   detect-version:
     runs-on: ubuntu-latest
     outputs:
@@ -34,11 +31,9 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "[*] Building ajeossida for Frida $VERSION"
 
-  # ─── Build Android stealth servers ──────────────────────────────
   build-android:
     needs: detect-version
     runs-on: ubuntu-latest
-    if: ${{ github.event.inputs.platforms == 'both' || github.event.inputs.platforms == 'android' || github.event.inputs.platforms == '' }}
     strategy:
       matrix:
         arch: [arm, arm64, x86, x86_64]
@@ -62,7 +57,6 @@ jobs:
 
           python3 patches/binary_patch.py "$BINARY"
 
-          # Rename to ajeossida
           mv "$BINARY" "ajeossida-server-${VERSION}-android-${ARCH}"
           gzip -9 "ajeossida-server-${VERSION}-android-${ARCH}"
 
@@ -75,50 +69,8 @@ jobs:
           path: ajeossida-server-*.gz
           retention-days: 1
 
-  # ─── Build iOS stealth servers ──────────────────────────────────
-  build-ios:
-    needs: detect-version
-    runs-on: macos-14
-    if: ${{ github.event.inputs.platforms == 'both' || github.event.inputs.platforms == 'ios' || github.event.inputs.platforms == '' }}
-    strategy:
-      matrix:
-        arch: [arm64]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download official Frida server (iOS)
-        run: |
-          VERSION="${{ needs.detect-version.outputs.version }}"
-          ARCH="${{ matrix.arch }}"
-          echo "[*] Downloading frida-server-${VERSION}-ios-${ARCH}"
-          wget -q "https://github.com/frida/frida/releases/download/${VERSION}/frida-server-${VERSION}-ios-${ARCH}.xz"
-          xz -d "frida-server-${VERSION}-ios-${ARCH}.xz"
-          chmod +x "frida-server-${VERSION}-ios-${ARCH}"
-
-      - name: Apply ajeossida binary patches
-        run: |
-          VERSION="${{ needs.detect-version.outputs.version }}"
-          ARCH="${{ matrix.arch }}"
-          BINARY="frida-server-${VERSION}-ios-${ARCH}"
-
-          python3 patches/binary_patch.py "$BINARY"
-
-          mv "$BINARY" "ajeossida-server-${VERSION}-ios-${ARCH}"
-          gzip -9 "ajeossida-server-${VERSION}-ios-${ARCH}"
-
-          echo "[+] Produced: ajeossida-server-${VERSION}-ios-${ARCH}.gz"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ajeossida-ios-${{ matrix.arch }}
-          path: ajeossida-server-*.gz
-          retention-days: 1
-
-  # ─── Create GitHub Release ──────────────────────────────────────
   release:
-    needs: [detect-version, build-android, build-ios]
-    if: always()
+    needs: [detect-version, build-android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -138,7 +90,7 @@ jobs:
           tag_name: ${{ needs.detect-version.outputs.version }}-ajeossida
           name: Ajeossida Frida ${{ needs.detect-version.outputs.version }} Stealth
           body: |
-            Stealth-patched Frida ${{ needs.detect-version.outputs.version }} servers
+            Stealth-patched Frida ${{ needs.detect-version.outputs.version }} Android servers
 
             **Patches applied:**
             - `frida_agent_main` → `ajeossida_agent_main`
