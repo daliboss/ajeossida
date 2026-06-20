@@ -1,0 +1,95 @@
+name: Build Ajeossida
+
+on:
+  workflow_dispatch:
+    inputs:
+      frida_version:
+        description: 'Frida version to build (e.g., 17.15.0)'
+        required: true
+        default: 'latest'
+  schedule:
+    # Check for new Frida releases weekly (Sunday 3AM UTC)
+    - cron: '0 3 * * 0'
+  watch:
+    types: [published]
+  repository_dispatch:
+    types: [frida-release]
+
+jobs:
+  build-android:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valac meson ninja-build git zip unzip gcc g++ python3-requests
+
+      - name: Download Android NDK r29
+        run: |
+          wget -q https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          unzip -q android-ndk-r29-linux.zip
+
+      - name: Determine Frida version
+        id: version
+        run: |
+          if [[ "${{ github.event.inputs.frida_version }}" == "latest" ]]; then
+            VERSION=$(curl -s https://api.github.com/repos/frida/frida/releases/latest | jq -r '.tag_name' | sed 's/Frida //')
+          else
+            VERSION="${{ github.event.inputs.frida_version }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building Frida $VERSION"
+
+      - name: Clone Frida
+        run: |
+          git clone --recurse-submodules https://github.com/frida/frida.git frida-source
+          cd frida-source
+          git checkout ${{ steps.version.outputs.version }}
+
+      - name: Apply ajeossida patches
+        run: |
+          cd frida-source
+          python3 ../patches/apply_patches.py
+
+      - name: Build Android arm64
+        run: |
+          cd frida-source
+          export ANDROID_NDK_ROOT=${{ github.workspace }}/android-ndk-r29
+          mkdir -p android-arm64
+          meson setup android-arm64 --cross-file=frida-linux-arm64.txt -Dprefix=/usr/local -Ddefault_library=static -Doptimization=s
+          ninja -C android-arm64
+
+      - name: Apply binary patches
+        run: |
+          cd frida-source
+          python3 ../patches/binary_patch.py
+
+      - name: Compress and release
+        uses: actions/upload-release-assets@v1
+        with:
+          files: frida-source/ajeossida-server-*
+          upload_url: ${{ github.event.release.upload_url }}
+
+  build-ios:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup
+        run: |
+          brew install python3 vala meson ninja
+
+      - name: Build iOS arm64
+        # Similar build steps for iOS
+        run: echo "iOS build placeholder"
