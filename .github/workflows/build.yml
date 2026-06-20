@@ -4,92 +4,158 @@ on:
   workflow_dispatch:
     inputs:
       frida_version:
-        description: 'Frida version to build (e.g., 17.15.0)'
+        description: 'Frida version (e.g., 17.15.0) or "latest"'
         required: true
         default: 'latest'
-  schedule:
-    # Check for new Frida releases weekly (Sunday 3AM UTC)
-    - cron: '0 3 * * 0'
-  watch:
-    types: [published]
-  repository_dispatch:
-    types: [frida-release]
+      platforms:
+        description: 'Platforms to build (android, ios, or both)'
+        required: true
+        default: 'both'
+
+permissions:
+  contents: write
 
 jobs:
-  build-android:
-    runs-on: ubuntu-22.04
+  # ─── Detect latest Frida version ────────────────────────────────
+  detect-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.detect.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Install dependencies
+      - name: Detect Frida version
+        id: detect
         run: |
-          sudo apt-get update
-          sudo apt-get install -y valac meson ninja-build git zip unzip gcc g++ python3-requests
-
-      - name: Download Android NDK r29
-        run: |
-          wget -q https://dl.google.com/android/repository/android-ndk-r29-linux.zip
-          unzip -q android-ndk-r29-linux.zip
-
-      - name: Determine Frida version
-        id: version
-        run: |
-          if [[ "${{ github.event.inputs.frida_version }}" == "latest" ]]; then
-            VERSION=$(curl -s https://api.github.com/repos/frida/frida/releases/latest | jq -r '.tag_name' | sed 's/Frida //')
+          INPUT="${{ github.event.inputs.frida_version }}"
+          if [[ "$INPUT" == "latest" || -z "$INPUT" ]]; then
+            VERSION=$(curl -sf https://api.github.com/repos/frida/frida/releases/latest | jq -r '.tag_name')
           else
-            VERSION="${{ github.event.inputs.frida_version }}"
+            VERSION="$INPUT"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Building Frida $VERSION"
+          echo "[*] Building ajeossida for Frida $VERSION"
 
-      - name: Clone Frida
-        run: |
-          git clone --recurse-submodules https://github.com/frida/frida.git frida-source
-          cd frida-source
-          git checkout ${{ steps.version.outputs.version }}
-
-      - name: Apply ajeossida patches
-        run: |
-          cd frida-source
-          python3 ../patches/apply_patches.py
-
-      - name: Build Android arm64
-        run: |
-          cd frida-source
-          export ANDROID_NDK_ROOT=${{ github.workspace }}/android-ndk-r29
-          mkdir -p android-arm64
-          meson setup android-arm64 --cross-file=frida-linux-arm64.txt -Dprefix=/usr/local -Ddefault_library=static -Doptimization=s
-          ninja -C android-arm64
-
-      - name: Apply binary patches
-        run: |
-          cd frida-source
-          python3 ../patches/binary_patch.py
-
-      - name: Compress and release
-        uses: actions/upload-release-assets@v1
-        with:
-          files: frida-source/ajeossida-server-*
-          upload_url: ${{ github.event.release.upload_url }}
-
-  build-ios:
-    runs-on: macos-14
+  # ─── Build Android stealth servers ──────────────────────────────
+  build-android:
+    needs: detect-version
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.platforms == 'both' || github.event.inputs.platforms == 'android' || github.event.inputs.platforms == '' }}
+    strategy:
+      matrix:
+        arch: [arm, arm64, x86, x86_64]
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
-      - name: Setup
+      - name: Download official Frida server
         run: |
-          brew install python3 vala meson ninja
+          VERSION="${{ needs.detect-version.outputs.version }}"
+          ARCH="${{ matrix.arch }}"
+          echo "[*] Downloading frida-server-${VERSION}-android-${ARCH}"
+          wget -q "https://github.com/frida/frida/releases/download/${VERSION}/frida-server-${VERSION}-android-${ARCH}.xz"
+          xz -d "frida-server-${VERSION}-android-${ARCH}.xz"
+          chmod +x "frida-server-${VERSION}-android-${ARCH}"
 
-      - name: Build iOS arm64
-        # Similar build steps for iOS
-        run: echo "iOS build placeholder"
+      - name: Apply ajeossida binary patches
+        run: |
+          VERSION="${{ needs.detect-version.outputs.version }}"
+          ARCH="${{ matrix.arch }}"
+          BINARY="frida-server-${VERSION}-android-${ARCH}"
+
+          python3 patches/binary_patch.py "$BINARY"
+
+          # Rename to ajeossida
+          mv "$BINARY" "ajeossida-server-${VERSION}-android-${ARCH}"
+          gzip -9 "ajeossida-server-${VERSION}-android-${ARCH}"
+
+          echo "[+] Produced: ajeossida-server-${VERSION}-android-${ARCH}.gz"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ajeossida-android-${{ matrix.arch }}
+          path: ajeossida-server-*.gz
+          retention-days: 1
+
+  # ─── Build iOS stealth servers ──────────────────────────────────
+  build-ios:
+    needs: detect-version
+    runs-on: macos-14
+    if: ${{ github.event.inputs.platforms == 'both' || github.event.inputs.platforms == 'ios' || github.event.inputs.platforms == '' }}
+    strategy:
+      matrix:
+        arch: [arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download official Frida server (iOS)
+        run: |
+          VERSION="${{ needs.detect-version.outputs.version }}"
+          ARCH="${{ matrix.arch }}"
+          echo "[*] Downloading frida-server-${VERSION}-ios-${ARCH}"
+          wget -q "https://github.com/frida/frida/releases/download/${VERSION}/frida-server-${VERSION}-ios-${ARCH}.xz"
+          xz -d "frida-server-${VERSION}-ios-${ARCH}.xz"
+          chmod +x "frida-server-${VERSION}-ios-${ARCH}"
+
+      - name: Apply ajeossida binary patches
+        run: |
+          VERSION="${{ needs.detect-version.outputs.version }}"
+          ARCH="${{ matrix.arch }}"
+          BINARY="frida-server-${VERSION}-ios-${ARCH}"
+
+          python3 patches/binary_patch.py "$BINARY"
+
+          mv "$BINARY" "ajeossida-server-${VERSION}-ios-${ARCH}"
+          gzip -9 "ajeossida-server-${VERSION}-ios-${ARCH}"
+
+          echo "[+] Produced: ajeossida-server-${VERSION}-ios-${ARCH}.gz"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ajeossida-ios-${{ matrix.arch }}
+          path: ajeossida-server-*.gz
+          retention-days: 1
+
+  # ─── Create GitHub Release ──────────────────────────────────────
+  release:
+    needs: [detect-version, build-android, build-ios]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: List release files
+        run: ls -la release-artifacts/ || echo "No artifacts found"
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.detect-version.outputs.version }}-ajeossida
+          name: Ajeossida Frida ${{ needs.detect-version.outputs.version }} Stealth
+          body: |
+            Stealth-patched Frida ${{ needs.detect-version.outputs.version }} servers
+
+            **Patches applied:**
+            - `frida_agent_main` → `ajeossida_agent_main`
+            - `gum-js-loop` → `ajeossida-js-loop`
+            - `gmain` → `amain`, `gdbus` → `gdbug`
+            - `pool-spawner` → `pool-spoiler`, `pool-frida` → `pool-ajeossida`
+            - `libfrida-agent-raw.so` → `libajeossida-agent-raw.so`
+            - `frida-server` → `ajeossida-server`
+            - `frida-helper-*` → `ajeossida-helper-*`
+
+            **Usage:**
+            ```bash
+            gunzip ajeossida-server-*-stealth.gz
+            adb push ajeossida-server-* /data/local/tmp/ajeossida-server
+            adb shell "chmod 755 /data/local/tmp/ajeossida-server"
+            adb shell "/data/local/tmp/ajeossida-server &"
+            ```
+          files: release-artifacts/**
+          draft: false
+          prerelease: false
