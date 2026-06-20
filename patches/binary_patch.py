@@ -1,49 +1,65 @@
 #!/usr/bin/env python3
-"""Apply binary patches to built Frida executables"""
+"""Apply ajeossida stealth binary patches to Frida server executables"""
 
-import os
 import gzip
+import os
+import sys
 
-def binary_patch(filepath):
-    """Apply hex/binary string patches to compiled binary"""
-    
-    binary_patches = [
-        # Thread names
-        (b"gmain\x00", b"amain\x00"),
-        (b"gdbus\x00", b"gdbug\x00"),
-        (b"pool-spawner\x00", b"pool-spoiler\x00"),
-        # Symbol names
-        (b"frida_agent_main", b"ajeossida_agent_main"),
-        (b"frida-server", b"ajeossida-server"),
-        (b"libfrida-agent-raw.so", b"libajeossida-agent-raw.so"),
-        (b"frida-helper-32", b"ajeossida-helper-32"),
-        (b"frida-helper-64", b"ajeossida-helper-64"),
-    ]
-    
-    with open(filepath, 'rb') as f:
+BINARY_PATCHES = [
+    # Agent entry point
+    (b"frida_agent_main", b"ajeossida_agent_main"),
+    # Server binary name references
+    (b"frida-server", b"ajeossida-server"),
+    # Agent library
+    (b"libfrida-agent-raw.so", b"libajeossida-agent-raw.so"),
+    # Helper binaries
+    (b"frida-helper-32", b"ajeossida-helper-32"),
+    (b"frida-helper-64", b"ajeossida-helper-64"),
+    # Thread names
+    (b"pool-frida", b"pool-ajeossida"),
+    (b"pool-spawner\x00", b"pool-spoiler\x00"),
+    # Event loop thread name
+    (b"gum-js-loop", b"ajeossida-js-loop"),
+    # GLib thread names (null-padded to keep same length)
+    (b"gmain\x00", b"amain\x00"),
+    (b"gdbus\x00", b"gdbug\x00"),
+]
+
+
+def patch_binary(filepath):
+    """Apply stealth patches to a Frida binary"""
+    print(f"[*] Patching: {filepath}")
+
+    with open(filepath, "rb") as f:
         content = f.read()
-    
-    for search, replace in binary_patches:
-        if search in content:
-            content = content.replace(search, replace)
-    
-    with open(filepath, 'wb') as f:
-        f.write(content)
-    
-    # Compress with gzip
-    with open(filepath, 'rb') as f_in:
-        with gzip.open(filepath + '.gz', 'wb') as f_out:
-            f_out.writelines(f_in)
-    
-    return True
 
-if __name__ == '__main__':
-    # Find and patch server binaries
-    for root, dirs, files in os.walk('.'):
-        for filename in files:
-            if 'server' in filename and filename.endswith(('.so', '')):
-                filepath = os.path.join(root, filename)
-                if binary_patch(filepath):
-                    print(f"[+] Patched: {filepath}")
-    
-    print("[+] Binary patching complete")
+    patched = False
+    for search, replace in BINARY_PATCHES:
+        count = content.count(search)
+        if count > 0:
+            content = content.replace(search, replace)
+            print(f"    {search.decode(errors='replace')} → {replace.decode(errors='replace')} ({count} occurrences)")
+            patched = True
+
+    if patched:
+        with open(filepath, "wb") as f:
+            f.write(content)
+        print(f"[+] Binary patched successfully")
+    else:
+        print(f"[!] No patches applied (strings not found)")
+
+    return patched
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python3 binary_patch.py <binary_path> [binary_path2 ...]")
+        sys.exit(1)
+
+    for binary_path in sys.argv[1:]:
+        if os.path.isfile(binary_path):
+            patch_binary(binary_path)
+        else:
+            print(f"[!] File not found: {binary_path}")
+
+    print("[+] Done")
