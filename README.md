@@ -1,4 +1,4 @@
-# Ajeossida (아저씨다)
+# Ajeossida
 Frida with patches that definitively fix basic detection points on Android and iOS.<br> 
 Unfortunately, I discovered that the patches in several custom Frida builds for bypassing detections are incomplete and still detectable.<br>
 For example, `frida_agent_main` in memory and the `gum-js-loop` thread name.<br> 
